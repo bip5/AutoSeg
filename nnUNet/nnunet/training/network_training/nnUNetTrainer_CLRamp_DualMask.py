@@ -44,7 +44,7 @@ class nnUNetTrainer_CLRamp_DualMask(nnUNetTrainer_NoCLRamp_DualMask):
                          deterministic, fp16)
         
         # ============== TOGGLES ==============
-        self.use_adamw = True  # Set False for standard SGD
+        self.use_adamw = False # Set False for standard SGD
         self.validation_mode = "standard"  # "standard" or "identical"
         
         # ============== INTENSITY RAMP SETTINGS ==============
@@ -71,6 +71,18 @@ class nnUNetTrainer_CLRamp_DualMask(nnUNetTrainer_NoCLRamp_DualMask):
         # Experiment 2: Gain-guard state
         self.ramp_wait_for_gain = False      # True after ramp, False after first gain
         self.ramp_first_epoch_value = None   # Performance at first epoch after ramp
+        
+        # ============== OUTPUT FOLDER SUFFIX (replaces NoCLRamp's base suffix) ==============
+        # Parent applied _standard suffix; strip it and apply full CLRamp suffix
+        opt = "adamw" if self.use_adamw else "sgd"
+        if self.output_folder is not None:
+            # Remove parent's validation_mode suffix (e.g. "_standard")
+            parent_suffix = f"_{self.validation_mode}"  # parent set same default
+            if self.output_folder.endswith(parent_suffix):
+                self.output_folder = self.output_folder[:-len(parent_suffix)]
+            # Apply full CLRamp suffix
+            self.output_folder = self.output_folder + f"_{self.validation_mode}_{opt}_i{self.initial_intensity}_p{self.plateau_patience_epochs}"
+
     def initialize(self, training=True, force_load_plans=False):
         """
         Modified to use DualMask generators with dynamic intensity.
@@ -135,6 +147,42 @@ class nnUNetTrainer_CLRamp_DualMask(nnUNetTrainer_NoCLRamp_DualMask):
         
         self.lr_scheduler = None
 
+    def _save_experiment_config(self):
+        """Override to add CLRamp-specific fields."""
+        # Call parent to save base config
+        super()._save_experiment_config()
+        
+        # Now append CLRamp fields to the latest config file
+        if self.output_folder is None:
+            return
+        
+        import glob
+        config_files = sorted(glob.glob(join(self.output_folder, "experiment_config_*.json")))
+        if not config_files:
+            return
+        
+        import json
+        latest = config_files[-1]
+        with open(latest, 'r') as f:
+            config = json.load(f)
+        
+        config.update({
+            "use_adamw": self.use_adamw,
+            "optimizer": "AdamW" if self.use_adamw else "SGD",
+            "initial_intensity": self.initial_intensity,
+            "max_intensity": self.max_intensity,
+            "intensity_ramp_step": self.intensity_ramp_step,
+            "plateau_patience_epochs": self.plateau_patience_epochs,
+            "early_stop_patience_epochs": self.early_stop_patience_epochs,
+            "training_intensity": f"CLRamp starting at {self.initial_intensity}",
+        })
+        
+        if self.use_adamw:
+            config["initial_lr"] = 1e-4
+        
+        with open(latest, 'w') as f:
+            json.dump(config, f, indent=2)
+
     def on_epoch_end(self):
         """
         Override to implement plateau detection and intensity ramping.
@@ -174,12 +222,13 @@ class nnUNetTrainer_CLRamp_DualMask(nnUNetTrainer_NoCLRamp_DualMask):
                 )
             elif current_product > self.ramp_first_epoch_value:
                 # Gained! Resume normal ramping
+                old_baseline = self.ramp_first_epoch_value
                 self.ramp_wait_for_gain = False
                 self.ramp_first_epoch_value = None
                 self.best_product = current_product
                 self.epochs_since_product_improvement = 0
                 self.print_to_log_file(
-                    f"  [Gain-guard] Gain achieved ({current_product:.4f} > {self.ramp_first_epoch_value:.4f}). "
+                    f"  [Gain-guard] Gain achieved ({current_product:.4f} > {old_baseline:.4f}). "
                     f"Resuming plateau counter."
                 )
             else:

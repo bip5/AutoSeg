@@ -41,7 +41,7 @@ class nnUNetTrainer_CLRamp(nnUNetTrainer_NoCLRamp):
                          deterministic, fp16)
         
         # ============== TOGGLES ==============
-        self.use_adamw = True  # Set False for standard SGD
+        self.use_adamw = False  # Set False for standard SGD
         self.validation_mode = "standard"  # "standard" or "identical"
         
         # ============== INTENSITY RAMP SETTINGS ==============
@@ -59,6 +59,52 @@ class nnUNetTrainer_CLRamp(nnUNetTrainer_NoCLRamp):
         self.best_score_ever = None
         self.ramp_history = []  # [(epoch, old_intensity, new_intensity), ...]
         
+        # ============== OUTPUT FOLDER SUFFIX (replaces NoCLRamp's base suffix) ==============
+        opt = "adamw" if self.use_adamw else "sgd"
+        if self.output_folder is not None:
+            # Remove parent's validation_mode suffix (e.g. "_standard")
+            parent_suffix = f"_{self.validation_mode}"
+            if self.output_folder.endswith(parent_suffix):
+                self.output_folder = self.output_folder[:-len(parent_suffix)]
+            # Apply full CLRamp suffix
+            self.output_folder = self.output_folder + f"_{self.validation_mode}_{opt}_i{self.initial_intensity}_p{self.plateau_patience_epochs}"
+    
+    def _save_experiment_config(self):
+        """Override to add CLRamp-specific fields."""
+        # Call parent to save base config
+        super()._save_experiment_config()
+        
+        # Append CLRamp fields to the latest config file
+        if self.output_folder is None:
+            return
+        
+        import glob
+        import json
+        config_files = sorted(glob.glob(join(self.output_folder, "experiment_config_*.json")))
+        if not config_files:
+            return
+        
+        latest = config_files[-1]
+        with open(latest, 'r') as f:
+            config = json.load(f)
+        
+        config.update({
+            "use_adamw": self.use_adamw,
+            "optimizer": "AdamW" if self.use_adamw else "SGD",
+            "initial_intensity": self.initial_intensity,
+            "max_intensity": self.max_intensity,
+            "intensity_ramp_step": self.intensity_ramp_step,
+            "plateau_patience_epochs": self.plateau_patience_epochs,
+            "early_stop_patience_epochs": self.early_stop_patience_epochs,
+            "training_intensity": f"CLRamp starting at {self.initial_intensity}",
+        })
+        
+        if self.use_adamw:
+            config["initial_lr"] = 1e-4
+        
+        with open(latest, 'w') as f:
+            json.dump(config, f, indent=2)
+
     def initialize(self, training=True, force_load_plans=False):
         """
         Modified to use CLRamp generators with dynamic intensity.

@@ -17,8 +17,11 @@ Key features:
 At inference: Uses clean-path mask (since test input is duplicated into both channels)
 """
 
+import json
+import os
 import numpy as np
 import torch
+from datetime import datetime
 from torch import nn
 
 from nnunet.training.network_training.nnUNetTrainer_IterativeDenoising import nnUNetTrainer_IterativeDenoising
@@ -27,6 +30,7 @@ from nnunet.training.loss_functions.dual_mask_loss import DualMaskProductLoss, M
 from nnunet.network_architecture.generic_UNet import Generic_UNet
 from nnunet.network_architecture.initialization import InitWeights_He
 from nnunet.utilities.nd_softmax import softmax_helper
+from nnunet.utilities.to_torch import maybe_to_torch, to_cuda
 from batchgenerators.utilities.file_and_folder_operations import join, save_json
 
 
@@ -47,6 +51,9 @@ class nnUNetTrainer_NoCLRamp_DualMask(nnUNetTrainer_IterativeDenoising):
         super().__init__(plans_file, fold, output_folder, dataset_directory, batch_dice, stage, unpack_data,
                          deterministic, fp16)
         
+        # ============== TOGGLES ==============
+        self.validation_mode = "standard"  # "standard" or "identical"
+        
         # Spectrum Validation Settings (same as NoCLRamp)
         self.validation_intensity_levels = 10
         self.min_training_intensity = 0.1
@@ -61,6 +68,14 @@ class nnUNetTrainer_NoCLRamp_DualMask(nnUNetTrainer_IterativeDenoising):
         
         # Flag to track training context (for validate() routing)
         self._in_training = False
+        
+        # Best spectrum score for model selection
+        self.best_spectrum_score = None
+        
+        # ============== OUTPUT FOLDER SUFFIX ==============
+        suffix = f"_{self.validation_mode}"
+        if self.output_folder is not None:
+            self.output_folder = self.output_folder + suffix
 
     def initialize_network(self):
         """
@@ -148,7 +163,7 @@ class nnUNetTrainer_NoCLRamp_DualMask(nnUNetTrainer_IterativeDenoising):
                 intensity_getter=fixed_intensity_getter,  # Fixed at 1.0 for NoCLRamp!
                 deep_supervision_scales=self.deep_supervision_scales,
                 pin_memory=self.pin_memory,
-                validation_mode="standard",
+                validation_mode=self.validation_mode,
                 validation_levels=self.validation_intensity_levels
             )
             
@@ -178,8 +193,74 @@ class nnUNetTrainer_NoCLRamp_DualMask(nnUNetTrainer_IterativeDenoising):
         self.loss = MultipleOutputDualMaskLoss(base_loss, self.ds_loss_weights)
         self.base_dual_mask_loss = base_loss  # Keep reference for logging
 
+    def _save_experiment_config(self):
+        """Save experiment configuration to a timestamped JSON file."""
+        if self.output_folder is None:
+            return
+        
+        config = {
+            "timestamp": datetime.now().isoformat(),
+            "trainer_class": self.__class__.__name__,
+            "validation_mode": self.validation_mode,
+            "training_intensity": f"random [{self.min_training_intensity}, {self.max_training_intensity}]",
+            "validation_intensity_levels": self.validation_intensity_levels,
+            "augmentation_limits": "NNUNET_LIMITS (v1/v2 defaults)",
+            "optimizer": "SGD",
+            "initial_lr": self.initial_lr,
+            "max_num_epochs": self.max_num_epochs,
+        }
+        
+        # Add plans-derived settings if available
+        if hasattr(self, 'plans') and self.plans is not None:
+            stage_plan = self.plans['plans_per_stage'][self.stage]
+            config["batch_size"] = int(stage_plan['batch_size'])
+            config["patch_size"] = [int(x) for x in stage_plan['patch_size']]
+        
+        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"experiment_config_{timestamp_str}.json"
+        filepath = join(self.output_folder, filename)
+        
+        os.makedirs(self.output_folder, exist_ok=True)
+        with open(filepath, 'w') as f:
+            json.dump(config, f, indent=2)
+        
+        self.print_to_log_file(f"Experiment config saved to: {filename}")
+    
+    def on_epoch_end(self):
+        """Override to add spectrum validation at checkpoint saves AND best model saves."""
+        # Track whether model_best.model will be saved (detected via MA improvement)
+        prev_best_val_ma = self.best_val_eval_criterion_MA
+        
+        continue_training = super().on_epoch_end()
+        
+        # Determine if spectrum validation should run
+        run_spectrum = False
+        
+        # Trigger 1: Checkpoint interval (every save_every epochs)
+        if self.epoch % self.save_every == (self.save_every - 1):
+            run_spectrum = True
+        
+        # Trigger 2: model_best.model was just saved (best val MA improved)
+        current_best_val_ma = self.best_val_eval_criterion_MA
+        if (current_best_val_ma is not None and 
+            (prev_best_val_ma is None or current_best_val_ma > prev_best_val_ma)):
+            run_spectrum = True
+        
+        if run_spectrum:
+            self.print_to_log_file(f"\n=== Spectrum Validation (Epoch {self.epoch}) ===")
+            spectrum_score = self.validate_spectrum()
+            
+            # Save best spectrum model separately
+            if self.best_spectrum_score is None or spectrum_score > self.best_spectrum_score:
+                self.best_spectrum_score = spectrum_score
+                self.save_checkpoint(join(self.output_folder, "model_best_spectrum.model"))
+                self.print_to_log_file(f"  New best spectrum model! Score: {spectrum_score:.4f}")
+        
+        return continue_training
+
     def run_training(self):
-        """Override to track training context."""
+        """Override to track training context and save experiment config."""
+        self._save_experiment_config()
         self._in_training = True
         try:
             return super().run_training()
@@ -231,8 +312,11 @@ class nnUNetTrainer_NoCLRamp_DualMask(nnUNetTrainer_IterativeDenoising):
                     data = batch['data']
                     target = batch['target']
                     
-                    data = torch.from_numpy(data).to(self.device, non_blocking=True)
-                    target = torch.from_numpy(target).to(self.device, non_blocking=True)
+                    data = maybe_to_torch(data)
+                    target = maybe_to_torch(target)
+                    if torch.cuda.is_available():
+                        data = to_cuda(data)
+                        target = to_cuda(target)
                     
                     output = self.network(data)
                     
