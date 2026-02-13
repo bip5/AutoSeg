@@ -170,7 +170,13 @@ def main():
         if folds[0] == 'all' and len(folds) == 1:
             pass
         else:
-            folds = [int(i) for i in folds]
+            parsed_folds = []
+            for i in folds:
+                try:
+                    parsed_folds.append(int(i))
+                except ValueError:
+                    parsed_folds.append(i)
+            folds = parsed_folds
     elif folds == "None":
         folds = None
     else:
