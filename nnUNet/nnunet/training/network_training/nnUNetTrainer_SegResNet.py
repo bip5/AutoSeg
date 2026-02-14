@@ -2,6 +2,7 @@ from nnunet.training.network_training.nnUNetTrainerV2 import nnUNetTrainerV2
 from nnunet.network_architecture.segresnet import SegResNetDSWrapper
 from torch import nn
 import numpy as np
+import torch
 
 class nnUNetTrainer_SegResNet(nnUNetTrainerV2):
     def __init__(self, plans_file, fold, output_folder=None, dataset_directory=None, batch_dice=True, stage=None,
@@ -30,7 +31,9 @@ class nnUNetTrainer_SegResNet(nnUNetTrainerV2):
         ds_depth = 4 # Default for SegResNetDS
         
         # Define scales for Deep Supervision Loss
-        self.deep_supervision_scales = [[1, 1, 1]] + [[1 / (2 ** i)] * 3 for i in range(1, ds_depth)]
+        # Verification showed dsdepth=4 produces 3 outputs: 1x, 0.5x, 0.25x.
+        # So we define 3 scales.
+        self.deep_supervision_scales = [[1, 1, 1], [0.5, 0.5, 0.5], [0.25, 0.25, 0.25]]
         
         # Instantiate the network wrapper
         # Input channels: self.num_input_channels
