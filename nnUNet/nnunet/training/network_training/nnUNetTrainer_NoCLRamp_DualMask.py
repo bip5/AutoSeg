@@ -474,24 +474,36 @@ class nnUNetTrainer_NoCLRamp_DualMask(nnUNetTrainer_IterativeDenoising):
 
     def predict_preprocessed_data_return_seg_and_softmax(self, data, **kwargs):
         """
-        At inference: duplicate input, run network, return CLEAN-PATH mask.
+        At inference: handle dual input with optional noise injection,
+        run network, return CLEAN-PATH mask.
         
         data: (C, X, Y, Z) - single modality input
         
-        We duplicate to (2C, X, Y, Z) for network input, then extract
-        the clean-path prediction (second half of output channels).
+        Noise modes (set via nnUNet_predict_noise --noise_mode):
+            0 = Standard: [img, img]
+            1 = Noise in augmented slot: [noise, img]
+            2 = Noise in reference slot: [img, noise]
         """
-        # Duplicate input channels for dual-input
-        data_dual = np.concatenate([data, data], axis=0)
+        from nnunet.inference.predict_noise import get_noise_mode
+        noise_mode = get_noise_mode()
         
-        # Get prediction - parent handles sliding window, etc.
-        # But we need to override to get the right output slice
+        if noise_mode == 1:
+            # Noise in augmented slot, real image in reference slot
+            noise = np.random.randn(*data.shape).astype(data.dtype)
+            data_dual = np.concatenate([noise, data], axis=0)
+        elif noise_mode == 2:
+            # Real image in augmented slot, noise in reference slot
+            noise = np.random.randn(*data.shape).astype(data.dtype)
+            data_dual = np.concatenate([data, noise], axis=0)
+        else:
+            # Standard: duplicate input
+            data_dual = np.concatenate([data, data], axis=0)
         
-        # Temporarily store original network
+        # Temporarily disable deep supervision for inference
         ds = self.network.do_ds
         self.network.do_ds = False
         
-        # Run prediction through parent (handles sliding window correctly)
+        # Run prediction through grandparent (handles sliding window correctly)
         ret = super(nnUNetTrainer_IterativeDenoising, self).predict_preprocessed_data_return_seg_and_softmax(
             data_dual, **kwargs
         )

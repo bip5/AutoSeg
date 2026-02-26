@@ -45,7 +45,7 @@ class nnUNetTrainer_CLRamp_DualMask(nnUNetTrainer_NoCLRamp_DualMask):
         
         # ============== TOGGLES ==============
         self.use_adamw = False # Set False for standard SGD
-        self.validation_mode = "standard"  # "standard" or "identical"
+        self.validation_mode = "identical"  # "standard" or "identical"
         
         # ============== INTENSITY RAMP SETTINGS ==============
         self.initial_intensity = 0.1

@@ -32,9 +32,10 @@ class nnUNetTrainer_NoCLRamp(nnUNetTrainer_IterativeDenoising):
         self.best_spectrum_score = None
         
         # ============== OUTPUT FOLDER SUFFIX ==============
-        suffix = f"_{self.validation_mode}"
-        if self.output_folder is not None:
-            self.output_folder = self.output_folder + suffix
+        if self.validation_mode != "standard":
+            suffix = f"_{self.validation_mode}"
+            if self.output_folder is not None:
+                self.output_folder = self.output_folder + suffix
 
     def _save_experiment_config(self):
         """Save experiment configuration to a timestamped JSON file."""
@@ -228,13 +229,30 @@ class nnUNetTrainer_NoCLRamp(nnUNetTrainer_IterativeDenoising):
 
     def predict_preprocessed_data_return_seg_and_softmax(self, data, **kwargs):
         """
-        Gap 1 Fix: Inference Input Mismatch
-        data shape: (c, x, y, z) → need (2c, x, y, z)
-        Duplicate input: [original, original]
+        Inference Input Handling for dual-input network.
+        
+        data shape: (C, X, Y, Z) → need (2C, X, Y, Z)
+        
+        Noise modes (set via nnUNet_predict_noise --noise_mode):
+            0 = Standard: [img, img]
+            1 = Noise in augmented slot: [noise, img]
+            2 = Noise in reference slot: [img, noise]
         """
-        # data is np.ndarray (C, X, Y, Z)
-        # We need to duplicate channel-wise
-        data_dual = np.concatenate([data, data], axis=0)
+        from nnunet.inference.predict_noise import get_noise_mode
+        noise_mode = get_noise_mode()
+        
+        if noise_mode == 1:
+            # Noise in augmented slot, real image in reference slot
+            noise = np.random.randn(*data.shape).astype(data.dtype)
+            data_dual = np.concatenate([noise, data], axis=0)
+        elif noise_mode == 2:
+            # Real image in augmented slot, noise in reference slot
+            noise = np.random.randn(*data.shape).astype(data.dtype)
+            data_dual = np.concatenate([data, noise], axis=0)
+        else:
+            # Standard: duplicate input
+            data_dual = np.concatenate([data, data], axis=0)
+        
         return super().predict_preprocessed_data_return_seg_and_softmax(data_dual, **kwargs)
 
     def load_checkpoint(self, fname, train=True):
