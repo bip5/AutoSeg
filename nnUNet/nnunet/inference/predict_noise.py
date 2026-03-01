@@ -47,13 +47,14 @@ def main():
                         help="Folds to use for prediction. Default: auto-detect")
 
     # === NOISE MODE ===
-    parser.add_argument('--noise_mode', type=int, default=0, choices=[0, 1, 2, 3, 4],
+    parser.add_argument('--noise_mode', type=int, default=0, choices=[0, 1, 2, 3, 4, 5],
                         help="Noise injection mode: "
-                             "0=standard [img,img], "
+                             "0=standard [img,img] clean-path eval, "
                              "1=noise in aug slot (clean-path eval), "
                              "2=noise in ref slot (clean-path eval), "
                              "3=noise in aug slot (aug-path eval), "
-                             "4=noise in ref slot (aug-path eval)")
+                             "4=noise in ref slot (aug-path eval), "
+                             "5=standard [img,img] aug-path eval")
 
     parser.add_argument('-z', '--save_npz', required=False, action='store_true',
                         help="Save softmax probabilities as npz")
@@ -118,7 +119,8 @@ def main():
                         1: "noise in augmented [noise, img] → clean-path", 
                         2: "noise in reference [img, noise] → clean-path",
                         3: "noise in augmented [noise, img] → aug-path",
-                        4: "noise in reference [img, noise] → aug-path"}
+                        4: "noise in reference [img, noise] → aug-path",
+                        5: "standard [img, img] → aug-path"}
     print(f"\n{'='*60}")
     print(f"NOISE MODE: {noise_mode} - {noise_mode_names[noise_mode]}")
     print(f"{'='*60}\n")

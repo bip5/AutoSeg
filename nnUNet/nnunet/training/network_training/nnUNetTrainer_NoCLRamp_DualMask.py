@@ -474,29 +474,32 @@ class nnUNetTrainer_NoCLRamp_DualMask(nnUNetTrainer_IterativeDenoising):
 
     def predict_preprocessed_data_return_seg_and_softmax(self, data, **kwargs):
         """
-        At inference: handle dual input with optional noise injection,
-        run network, return CLEAN-PATH mask.
+        At inference: handle dual input with optional noise injection.
         
         data: (C, X, Y, Z) - single modality input
         
-        Noise modes (set via nnUNet_predict_noise --noise_mode):
-            0 = Standard: [img, img]
-            1 = Noise in augmented slot: [noise, img]
-            2 = Noise in reference slot: [img, noise]
+        Noise modes (set via predict_noise --noise_mode):
+            0 = Standard: [img, img] → clean-path output
+            1 = [noise, img] → clean-path output
+            2 = [img, noise] → clean-path output
+            3 = [noise, img] → aug-path output
+            4 = [img, noise] → aug-path output
+            5 = Standard: [img, img] → aug-path output
         """
         from nnunet.inference.predict_noise import get_noise_mode
         noise_mode = get_noise_mode()
         
-        if noise_mode == 1:
+        # Build dual input based on noise mode
+        if noise_mode in (1, 3):
             # Noise in augmented slot, real image in reference slot
             noise = np.random.randn(*data.shape).astype(data.dtype)
             data_dual = np.concatenate([noise, data], axis=0)
-        elif noise_mode == 2:
+        elif noise_mode in (2, 4):
             # Real image in augmented slot, noise in reference slot
             noise = np.random.randn(*data.shape).astype(data.dtype)
             data_dual = np.concatenate([data, noise], axis=0)
         else:
-            # Standard: duplicate input
+            # Standard: duplicate input (modes 0 and 5)
             data_dual = np.concatenate([data, data], axis=0)
         
         # Temporarily disable deep supervision for inference
@@ -514,13 +517,17 @@ class nnUNetTrainer_NoCLRamp_DualMask(nnUNetTrainer_IterativeDenoising):
         # softmax shape: (2*num_classes, X, Y, Z)
         segmentation, softmax_probs = ret
         
-        # Extract clean-path prediction (second half of channels)
-        softmax_clean = softmax_probs[self.num_classes:]
+        # Select output path based on mode
+        if noise_mode in (3, 4, 5):
+            # Aug-path: first half of output channels
+            softmax_out = softmax_probs[:self.num_classes]
+        else:
+            # Clean-path: second half of output channels (default)
+            softmax_out = softmax_probs[self.num_classes:]
         
-        # Recompute segmentation from clean path
-        segmentation_clean = softmax_clean.argmax(0)
+        segmentation_out = softmax_out.argmax(0)
         
-        return segmentation_clean, softmax_clean
+        return segmentation_out, softmax_out
 
     def load_checkpoint(self, fname, train=True):
         """
