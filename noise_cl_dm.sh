@@ -1,9 +1,9 @@
 #!/bin/bash
-# NoCL DualMask — Noise analysis for all 5 folds × 4 modes + ensemble (best model)
-# Run interactively: bash noise_ncl_dm.sh
+# CL DualMask — Noise analysis for all 5 folds × 4 modes + ensemble
+# Run interactively: bash noise_cl_dm.sh
 
 TASK="Task501_ISLES2022"
-TRAINER="nnUNetTrainer_NoCLRamp_DualMask"
+TRAINER="nnUNetTrainer_CLRamp_DualMask"
 MODEL="3d_fullres"
 PLANS="nnUNetPlansv2.1"
 
@@ -16,14 +16,14 @@ TEST_BASE="/scratch/a.bip5/AutoSeg/Test/nnUNet/${MODEL}/${TASK}"
 REPO_DIR="/scratch/a.bip5/AutoSeg/nnUNet"
 cd ${REPO_DIR}
 git add -A
-git commit -m "pre-run NoCL_DM noise eval $(date '+%Y-%m-%d %H:%M:%S')" || echo "Nothing to commit"
+git commit -m "pre-run CL_DM noise eval $(date '+%Y-%m-%d %H:%M:%S')" || echo "Nothing to commit"
 git push origin main || echo "Push failed (non-critical)"
 cd -
 
 # ── Per-fold noise runs ──────────────────────────────────────
 for FOLD in 0 1 2 3 4; do
-    for NMODE in 0 1 2 3 4 5; do
-        OUT_DIR="${TEST_BASE}/ncl_dm_f${FOLD}_noise${NMODE}"
+    for NMODE in 1 2 3 4 5; do
+        OUT_DIR="${TEST_BASE}/cl_dm_f${FOLD}_noise${NMODE}"
         echo ""
         echo ">>> Fold ${FOLD} | Noise mode ${NMODE} → ${OUT_DIR}"
 
@@ -35,8 +35,7 @@ for FOLD in 0 1 2 3 4; do
             -p ${PLANS} \
             -t ${TASK} \
             --noise_mode ${NMODE} \
-            -f ${FOLD} \
-            -chk model_best
+            -f ${FOLD}
 
         nnUNet_evaluate_folder \
             -ref  ${LABELS_TS} \
@@ -46,8 +45,8 @@ for FOLD in 0 1 2 3 4; do
 done
 
 # ── Ensemble noise runs ─────────────────────────────────────
-for NMODE in 0 1 2 3 4 5; do
-    OUT_DIR="${TEST_BASE}/ncl_dm_ens_noise${NMODE}"
+for NMODE in 1 2 3 4 5; do
+    OUT_DIR="${TEST_BASE}/cl_dm_ens_noise${NMODE}"
     echo ""
     echo ">>> Ensemble | Noise mode ${NMODE} → ${OUT_DIR}"
 
@@ -59,8 +58,7 @@ for NMODE in 0 1 2 3 4 5; do
         -p ${PLANS} \
         -t ${TASK} \
         --noise_mode ${NMODE} \
-        -f 0 1 2 3 4 \
-        -chk model_best
+        -f 0 1 2 3 4
 
     nnUNet_evaluate_folder \
         -ref  ${LABELS_TS} \
@@ -70,6 +68,6 @@ done
 
 echo ""
 echo ">>> Collecting results"
-python collect_results.py ${TEST_BASE} --prefix ncl_dm -o ${TEST_BASE}/ncl_dm_noise_results.txt
+python collect_results.py ${TEST_BASE} --prefix cl_dm -o ${TEST_BASE}/cl_dm_noise_results.txt
 
 echo "ALL DONE AT $(date)"
