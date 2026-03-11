@@ -53,6 +53,7 @@ class nnUNetTrainer_NoCLRamp_DualMask(nnUNetTrainer_IterativeDenoising):
         
         # ============== TOGGLES ==============
         self.validation_mode = "standard"  # "standard" or "identical"
+        self.do_spectrum_validation = False  # Set True to enable spectrum validation during training
         
         # Spectrum Validation Settings (same as NoCLRamp)
         self.validation_intensity_levels = 10
@@ -236,15 +237,16 @@ class nnUNetTrainer_NoCLRamp_DualMask(nnUNetTrainer_IterativeDenoising):
         # Determine if spectrum validation should run
         run_spectrum = False
         
-        # Trigger 1: Checkpoint interval (every save_every epochs)
-        if self.epoch % self.save_every == (self.save_every - 1):
-            run_spectrum = True
-        
-        # Trigger 2: model_best.model was just saved (best val MA improved)
-        current_best_val_ma = self.best_val_eval_criterion_MA
-        if (current_best_val_ma is not None and 
-            (prev_best_val_ma is None or current_best_val_ma > prev_best_val_ma)):
-            run_spectrum = True
+        if self.do_spectrum_validation:
+            # Trigger 1: Checkpoint interval (every save_every epochs)
+            if self.epoch % self.save_every == (self.save_every - 1):
+                run_spectrum = True
+            
+            # Trigger 2: model_best.model was just saved (best val MA improved)
+            current_best_val_ma = self.best_val_eval_criterion_MA
+            if (current_best_val_ma is not None and 
+                (prev_best_val_ma is None or current_best_val_ma > prev_best_val_ma)):
+                run_spectrum = True
         
         if run_spectrum:
             self.print_to_log_file(f"\n=== Spectrum Validation (Epoch {self.epoch}) ===")
@@ -274,7 +276,7 @@ class nnUNetTrainer_NoCLRamp_DualMask(nnUNetTrainer_IterativeDenoising):
         """
         Route to spectrum validation during training, full validation after.
         """
-        if self._in_training:
+        if self._in_training and self.do_spectrum_validation:
             return self.validate_spectrum()
         
         # After training, generate NIfTI files for evaluation

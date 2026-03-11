@@ -41,7 +41,7 @@ class nnUNetTrainer_CLRamp(nnUNetTrainer_NoCLRamp):
                          deterministic, fp16)
         
         # ============== TOGGLES ==============
-        self.use_adamw = False  # Set False for standard SGD
+        self.use_adamw = True  # Set False for standard SGD
         self.validation_mode = "standard"  # "standard" or "identical"
         
         # ============== INTENSITY RAMP SETTINGS ==============
@@ -289,12 +289,18 @@ class nnUNetTrainer_CLRamp(nnUNetTrainer_NoCLRamp):
 
     def maybe_update_lr(self, epoch=None):
         """
-        Override LR scheduling for AdamW (constant LR) vs SGD (poly_lr).
+        Override LR scheduling for AdamW (cosine decay) vs SGD (poly_lr).
         """
         if self.use_adamw:
-            # AdamW: Keep constant LR (no poly decay)
-            # You can add warmup or other schedules here if needed
-            self.print_to_log_file("lr:", np.round(self.optimizer.param_groups[0]['lr'], decimals=6))
+            # AdamW: Cosine annealing (T_max = max_num_epochs, eta_min = 0)
+            import math
+            if epoch is None:
+                ep = self.epoch
+            else:
+                ep = epoch
+            new_lr = 1e-4 * 0.5 * (1.0 + math.cos(math.pi * ep / self.max_num_epochs))
+            self.optimizer.param_groups[0]['lr'] = new_lr
+            self.print_to_log_file("lr:", np.round(new_lr, decimals=6))
         else:
             # SGD: Use standard poly_lr from parent
             super().maybe_update_lr(epoch)
