@@ -44,8 +44,7 @@ class nnUNetTrainer_SegResNet(nnUNetTrainerV2):
             out_channels=self.num_classes,
             init_filters=32, # Configurable
             blocks_down=(1, 2, 2, 4), # Default
-            blocks_up=(1, 1, 1),      # Default
-            ds_depth=ds_depth
+            dsdepth=ds_depth
         )
         
         if torch.cuda.is_available():

@@ -544,6 +544,8 @@ class nnUNetTrainerV2_DDP(nnUNetTrainerV2):
                                    )
 
         _ = [i.get() for i in results]
+        export_pool.close()
+        export_pool.join()
         self.print_to_log_file("finished prediction")
 
         distributed.barrier()

@@ -462,3 +462,199 @@ class Generic_UNet_InputResidual_PerConv_Unique(_InputResidualBase_Unique):
             return tuple([seg_outputs[-1]] + [i(j) for i, j in zip(list(self.upscale_logits_ops)[::-1], seg_outputs[:-1][::-1])])
         else:
             return seg_outputs[-1]
+
+
+# ====================================================================== #
+#  Split Variants — No projection, direct channel-group addition          #
+# ====================================================================== #
+
+class _InputResidualSplitBase(Generic_UNet):
+    """
+    Base class for split-residual variants.
+
+    Instead of a learnable 1x1 projection, feature maps are divided into
+    `num_input_channels` equally-sized groups and each input channel is
+    broadcast-added to its corresponding group.
+
+    Truncation strategy: if `num_features % num_input_channels != 0`,
+    only the first `group_size * num_input_channels` feature channels
+    receive the residual; the remainder channels pass through unmodified.
+    This keeps the split clean and also leaves "residual-free" channels
+    that could aid interpretability or composite experiments.
+    """
+
+    def __init__(self, input_channels, base_num_features, num_classes, num_pool,
+                 num_conv_per_stage=2, feat_map_mul_on_downscale=2, conv_op=nn.Conv2d,
+                 norm_op=nn.BatchNorm2d, norm_op_kwargs=None,
+                 dropout_op=nn.Dropout2d, dropout_op_kwargs=None,
+                 nonlin=nn.LeakyReLU, nonlin_kwargs=None,
+                 deep_supervision=True, dropout_in_localization=False,
+                 final_nonlin=softmax_helper, weightInitializer=InitWeights_He(1e-2),
+                 pool_op_kernel_sizes=None, conv_kernel_sizes=None,
+                 upscale_logits=False, convolutional_pooling=False,
+                 convolutional_upsampling=False, max_num_features=None,
+                 basic_block=ConvDropoutNormNonlin, seg_output_use_bias=False):
+
+        super().__init__(
+            input_channels, base_num_features, num_classes, num_pool,
+            num_conv_per_stage, feat_map_mul_on_downscale, conv_op,
+            norm_op, norm_op_kwargs, dropout_op, dropout_op_kwargs,
+            nonlin, nonlin_kwargs, deep_supervision, dropout_in_localization,
+            final_nonlin, weightInitializer, pool_op_kernel_sizes, conv_kernel_sizes,
+            upscale_logits, convolutional_pooling, convolutional_upsampling,
+            max_num_features, basic_block, seg_output_use_bias
+        )
+
+        self._is_3d = (conv_op == nn.Conv3d)
+        self._input_channels_orig = input_channels
+
+    # ------------------------------------------------------------------ #
+    #  Helpers                                                             #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _iter_basic_blocks(module):
+        """Yield all ConvDropoutNormNonlin blocks from a stage module."""
+        if isinstance(module, StackedConvLayers):
+            yield from module.blocks
+        elif isinstance(module, nn.Sequential):
+            for sub in module:
+                if isinstance(sub, StackedConvLayers):
+                    yield from sub.blocks
+                elif isinstance(sub, ConvDropoutNormNonlin):
+                    yield sub
+
+    def _pool_input(self, x_input, target_spatial):
+        """Adaptively pool the original input to match target spatial dims."""
+        if self._is_3d:
+            return F.adaptive_avg_pool3d(x_input, target_spatial)
+        else:
+            return F.adaptive_avg_pool2d(x_input, target_spatial)
+
+    def _split_add_input(self, x, x_input):
+        """
+        Divide feature maps into groups and add each input channel to its group.
+
+        Args:
+            x: feature tensor [B, C, ...] after norm, before nonlin
+            x_input: original input [B, input_channels, ...]
+
+        Returns:
+            x with input residual added via channel-group splitting.
+            Channels beyond group_size * input_channels are unchanged.
+        """
+        num_features = x.shape[1]
+        n_in = self._input_channels_orig
+        group_size = num_features // n_in  # truncation: floor division
+
+        if group_size == 0:
+            # Edge case: fewer features than input channels, skip injection
+            return x
+
+        spatial = tuple(x.shape[2:])
+        x_pooled = self._pool_input(x_input, spatial)  # [B, n_in, *spatial]
+
+        # Clone to avoid in-place modification of norm output
+        x_out = x.clone()
+        for i in range(n_in):
+            start = i * group_size
+            end = (i + 1) * group_size
+            # x_pooled[:, i:i+1, ...] broadcasts over the group_size channels
+            x_out[:, start:end] = x[:, start:end] + x_pooled[:, i:i+1]
+
+        return x_out
+
+    # ------------------------------------------------------------------ #
+    #  Subclass hook                                                       #
+    # ------------------------------------------------------------------ #
+
+    def _run_stage(self, stage_module, x, x_input):
+        raise NotImplementedError
+
+    # ------------------------------------------------------------------ #
+    #  Forward                                                             #
+    # ------------------------------------------------------------------ #
+
+    def forward(self, x):
+        x_input = x
+        skips = []
+        seg_outputs = []
+
+        # Encoder
+        for d in range(len(self.conv_blocks_context) - 1):
+            x = self._run_stage(self.conv_blocks_context[d], x, x_input)
+            skips.append(x)
+            if not self.convolutional_pooling:
+                x = self.td[d](x)
+
+        # Bottleneck
+        x = self._run_stage(self.conv_blocks_context[-1], x, x_input)
+
+        # Decoder
+        for u in range(len(self.tu)):
+            x = self.tu[u](x)
+            x = torch.cat((x, skips[-(u + 1)]), dim=1)
+            x = self._run_stage(self.conv_blocks_localization[u], x, x_input)
+            seg_outputs.append(self.final_nonlin(self.seg_outputs[u](x)))
+
+        if self._deep_supervision and self.do_ds:
+            return tuple(
+                [seg_outputs[-1]] +
+                [i(j) for i, j in zip(
+                    list(self.upscale_logits_ops)[::-1],
+                    seg_outputs[:-1][::-1]
+                )]
+            )
+        else:
+            return seg_outputs[-1]
+
+
+class Generic_UNet_InputResidual_PerStage_Split(_InputResidualSplitBase):
+    """
+    Split-residual injected at the LAST block of each stage.
+
+    Feature maps are split into num_input_channels groups; each input
+    channel is broadcast-added to its group after InstanceNorm, before
+    LeakyReLU. No learnable projection parameters.
+    """
+
+    def _run_stage(self, stage_module, x, x_input):
+        blocks = list(self._iter_basic_blocks(stage_module))
+
+        # All blocks except last: normal forward
+        for block in blocks[:-1]:
+            x = block(x)
+
+        # Last block: inject split-residual between norm and nonlin
+        last = blocks[-1]
+        x = last.conv(x)
+        if last.dropout is not None:
+            x = last.dropout(x)
+        x = last.instnorm(x)
+
+        x = self._split_add_input(x, x_input)
+
+        x = last.lrelu(x)
+        return x
+
+
+class Generic_UNet_InputResidual_PerConv_Split(_InputResidualSplitBase):
+    """
+    Split-residual injected at EVERY conv block.
+
+    Feature maps are split into num_input_channels groups; each input
+    channel is broadcast-added to its group after InstanceNorm, before
+    LeakyReLU. No learnable projection parameters.
+    """
+
+    def _run_stage(self, stage_module, x, x_input):
+        for block in self._iter_basic_blocks(stage_module):
+            x = block.conv(x)
+            if block.dropout is not None:
+                x = block.dropout(x)
+            x = block.instnorm(x)
+
+            x = self._split_add_input(x, x_input)
+
+            x = block.lrelu(x)
+        return x

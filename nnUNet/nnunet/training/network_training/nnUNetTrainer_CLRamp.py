@@ -41,7 +41,7 @@ class nnUNetTrainer_CLRamp(nnUNetTrainer_NoCLRamp):
                          deterministic, fp16)
         
         # ============== TOGGLES ==============
-        self.use_adamw = True  # Set False for standard SGD
+        self.use_adamw = False  # Set False for standard SGD
         self.validation_mode = "standard"  # "standard" or "identical"
         
         # ============== INTENSITY RAMP SETTINGS ==============

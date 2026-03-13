@@ -303,6 +303,8 @@ class nnUNetTrainerV2CascadeFullRes(nnUNetTrainerV2):
                                    join(self.gt_niftis_folder, fname + ".nii.gz")])
 
         _ = [i.get() for i in results]
+        export_pool.close()
+        export_pool.join()
         self.print_to_log_file("finished prediction")
 
         # evaluate raw predictions
