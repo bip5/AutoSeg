@@ -25,6 +25,10 @@ TEST_BASE="/scratch/a.bip5/AutoSeg/Test/nnUNet/${MODEL}/${TASK}"
 
 export nnUNet_n_proc_DA=8
 
+# Define explicit nnU-Net environment path for checkpoint checking
+export nnUNet_results="/scratch/a.bip5/AutoSeg/nnUNet_trained_models/nnUNet"
+
+
 # ── Trainer list (indexed by SLURM_ARRAY_TASK_ID) ────────────
 # "nnUNetTrainerV2_300epochs"
 # "nnUNetTrainer_NoCLRamp_DualMask_300epochs"
@@ -41,25 +45,7 @@ TRAINERS=(
     "nnUNetTrainerV2_InputResidualUNet_PerConv_Split_300epochs"
     "nnUNetTrainerV2_InputResidualUNet_PerStage_Unique_300epochs"        
 )
-
-SHORT_NAMES=(
-    "baseline"
-    "ncl_dm"
-    "cl_dm"
-    "rigid"
-    "senet"
-    "ir_perstage"
-    "ir_perconv"
-    "ir_perstage_uniq"
-    "ir_perconv_uniq"
-    "segresnet"
-    "segresnet_in"
-    "maskdenoise"
-    "maskdenoise_rand"
-)
-
 TRAINER="${TRAINERS[$SLURM_ARRAY_TASK_ID]}"
-SHORT="${SHORT_NAMES[$SLURM_ARRAY_TASK_ID]}_300ep"
 
 if [ -z "${TRAINER}" ]; then
     echo "ERROR: Invalid array index ${SLURM_ARRAY_TASK_ID}"
@@ -70,47 +56,68 @@ fi
 REPO_DIR="/scratch/a.bip5/AutoSeg/nnUNet"
 cd ${REPO_DIR}
 git add -A
-git commit -m "pre-run ${SHORT} fold${FOLD} $(date '+%Y-%m-%d %H:%M:%S')" || echo "Nothing to commit"
+git commit -m "pre-run ${TRAINER} fold${FOLD} $(date '+%Y-%m-%d %H:%M:%S')" || echo "Nothing to commit"
 git push origin main || echo "Push failed (non-critical)"
 cd -
 
 # ── Environment info ─────────────────────────────────────────
 echo "=========================================="
 echo "FOLD: ${FOLD}  |  TRAINER: ${TRAINER}"
-echo "SHORT: ${SHORT}  |  ARRAY_ID: ${SLURM_ARRAY_TASK_ID}"
+echo "ARRAY_ID: ${SLURM_ARRAY_TASK_ID}"
 echo "=========================================="
 python -c 'import torch;print("cuDNN:", torch.backends.cudnn.version())'
 python -c 'import torch;print("PyTorch:", torch.__version__)'
 
 # ── 1. Training ──────────────────────────────────────────────
 echo ""
-echo ">>> TRAINING fold ${FOLD} ..."
-PYTHONUNBUFFERED=1 nnUNet_train ${MODEL} ${TRAINER} 501 ${FOLD} --npz
+MODEL_DIR="${nnUNet_results}/${MODEL}/${TASK}/${TRAINER}__${PLANS}/fold_${FOLD}"
+if [ -f "${MODEL_DIR}/model_final_checkpoint.model" ] && [ -z "${FORCE_RETRAIN}" ]; then
+    echo ">>> SKIPPING training — model exists: ${MODEL_DIR}"
+else
+    echo ">>> TRAINING fold ${FOLD} ..."
+    PYTHONUNBUFFERED=1 nnUNet_train ${MODEL} ${TRAINER} 501 ${FOLD} --npz
+fi
 
 # ── 2. Standard Prediction & Evaluation ──────────────────────
-PRED_DIR="${TEST_BASE}/${SHORT}_f${FOLD}"
+PRED_DIR="${TEST_BASE}/${TRAINER}_f${FOLD}"
 echo ""
-echo ">>> PREDICTING fold ${FOLD} → ${PRED_DIR}"
-nnUNet_predict \
-    -i ${INPUT_TS} \
-    -o ${PRED_DIR} \
-    -tr ${TRAINER} \
-    -m ${MODEL} \
-    -p ${PLANS} \
-    -t ${TASK} \
-    -f ${FOLD}
+if [ -f "${PRED_DIR}/summary.json" ] && [ -z "${FORCE_RETRAIN}" ]; then
+    echo ">>> SKIPPING prediction & evaluation — results exist: ${PRED_DIR}"
+else
+    echo ">>> PREDICTING fold ${FOLD} → ${PRED_DIR}"
+    nnUNet_predict \
+        -i ${INPUT_TS} \
+        -o ${PRED_DIR} \
+        -tr ${TRAINER} \
+        -m ${MODEL} \
+        -p ${PLANS} \
+        -t ${TASK} \
+        -f ${FOLD}
 
-echo ">>> EVALUATING fold ${FOLD}"
-nnUNet_evaluate_folder \
-    -ref  ${LABELS_TS} \
-    -pred ${PRED_DIR} \
-    -l 1
+    echo ">>> EVALUATING fold ${FOLD}"
+    nnUNet_evaluate_folder \
+        -ref  ${LABELS_TS} \
+        -pred ${PRED_DIR} \
+        -l 1
+fi
 
 # ── 3. Collect results ───────────────────────────────────────
 echo ""
-echo ">>> COLLECTING results for ${SHORT}"
-python collect_results.py ${TEST_BASE} --prefix ${SHORT} \
-    -o ${TEST_BASE}/${SHORT}_results.txt
+echo ">>> COLLECTING results for ${TRAINER}"
+python collect_results.py ${TEST_BASE} --prefix ${TRAINER} \
+    -o ${TEST_BASE}/${TRAINER}_results.txt
+
+# ── 4. Visualise predictions ─────────────────────────────────
+VIS_DIR="${PRED_DIR}_vis"
+echo ""
+echo ">>> VISUALISING predictions for ${TRAINER}"
+echo ">>> Outputting visualisations to: ${VIS_DIR}"
+python visualise_results.py single \
+    --pred-dir ${PRED_DIR} \
+    --gt-dir ${LABELS_TS} \
+    --img-dir ${INPUT_TS} \
+    --out-dir ${VIS_DIR} \
+    ${FORCE_RETRAIN:+--overwrite}
 
 echo ""
 echo "ALL DONE AT $(date)"
