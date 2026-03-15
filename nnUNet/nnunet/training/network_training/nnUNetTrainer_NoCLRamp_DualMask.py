@@ -74,9 +74,9 @@ class nnUNetTrainer_NoCLRamp_DualMask(nnUNetTrainer_IterativeDenoising):
         self.best_spectrum_score = None
         
         # ============== OUTPUT FOLDER SUFFIX ==============
-        suffix = f"_{self.validation_mode}"
-        if self.output_folder is not None:
-            self.output_folder = self.output_folder + suffix
+        # suffix = f"_{self.validation_mode}"
+        # if self.output_folder is not None:
+            # self.output_folder = self.output_folder + suffix
 
     def initialize_network(self):
         """

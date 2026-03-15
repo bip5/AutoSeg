@@ -4,8 +4,13 @@
 #
 #        http://www.apache.org/licenses/LICENSE-2.0
 
+import torch
+from torch import nn
+
 from nnunet.training.network_training.nnUNetTrainerV2 import nnUNetTrainerV2
 from nnunet.network_architecture.generic_UNet_InputResidual import Generic_UNet_InputResidual_PerConv_Unique
+from nnunet.network_architecture.initialization import InitWeights_He
+from nnunet.utilities.nd_softmax import softmax_helper
 
 
 class nnUNetTrainerV2_InputResidualUNet_PerConv_Unique(nnUNetTrainerV2):
@@ -52,7 +57,7 @@ class nnUNetTrainerV2_InputResidualUNet_PerConv_Unique(nnUNetTrainerV2):
             True,
             False,
             lambda x: x,
-            self.InitWeights_He(1e-2),
+            InitWeights_He(1e-2),
             self.net_num_pool_op_kernel_sizes,
             self.net_conv_kernel_sizes,
             False,
