@@ -44,7 +44,6 @@ class nnUNetTrainer_CLRamp_DualMask(nnUNetTrainer_NoCLRamp_DualMask):
                          deterministic, fp16)
         
         # ============== TOGGLES ==============
-        self.use_adamw = False # Set False for standard SGD
         self.validation_mode = "standard"  # "standard" or "identical"
         
         # ============== INTENSITY RAMP SETTINGS ==============
@@ -72,16 +71,7 @@ class nnUNetTrainer_CLRamp_DualMask(nnUNetTrainer_NoCLRamp_DualMask):
         self.ramp_wait_for_gain = False      # True after ramp, False after first gain
         self.ramp_first_epoch_value = None   # Performance at first epoch after ramp
         
-        # ============== OUTPUT FOLDER SUFFIX (replaces NoCLRamp's base suffix) ==============
-        # Parent applied _standard suffix; strip it and apply full CLRamp suffix
-        opt = "adamw" if self.use_adamw else "sgd"
-        if self.output_folder is not None:
-            # Remove parent's validation_mode suffix (e.g. "_standard")
-            parent_suffix = f"_{self.validation_mode}"  # parent set same default
-            if self.output_folder.endswith(parent_suffix):
-                self.output_folder = self.output_folder[:-len(parent_suffix)]
-            # Apply full CLRamp suffix
-            self.output_folder = self.output_folder + f"_{self.validation_mode}_{opt}_i{self.initial_intensity}_p{self.plateau_patience_epochs}"
+        self.ramp_first_epoch_value = None   # Performance at first epoch after ramp
 
     def initialize(self, training=True, force_load_plans=False):
         """
@@ -110,7 +100,6 @@ class nnUNetTrainer_CLRamp_DualMask(nnUNetTrainer_NoCLRamp_DualMask):
             self._setup_dual_mask_loss()
             
             self.print_to_log_file(f"CLRamp_DualMask initialized:")
-            self.print_to_log_file(f"  Optimizer: {'AdamW' if self.use_adamw else 'SGD'}")
             self.print_to_log_file(f"  Validation mode: {self.validation_mode}")
             self.print_to_log_file(f"  Initial intensity: {self.current_intensity}")
             self.print_to_log_file(f"  Intensity ramp step: {self.intensity_ramp_step}")
@@ -118,35 +107,8 @@ class nnUNetTrainer_CLRamp_DualMask(nnUNetTrainer_NoCLRamp_DualMask):
             self.print_to_log_file(f"  Early stop patience: {self.early_stop_patience_epochs} epochs")
             self.print_to_log_file(f"  Ramping condition: Product Dice plateau")
 
-    def initialize_optimizer_and_scheduler(self):
-        """
-        Override to use AdamW (default) or SGD (toggle).
-        """
-        assert self.network is not None, "self.initialize_network must be called first"
-        
-        if self.use_adamw:
-            # AdamW optimizer
-            self.optimizer = torch.optim.AdamW(
-                self.network.parameters(), 
-                lr=1e-4, 
-                weight_decay=3e-5
-            )
-            self.print_to_log_file("Optimizer: AdamW (lr=1e-4, weight_decay=3e-5)")
-        else:
-            # Standard nnUNet SGD with proper LR
-            sgd_lr = 0.01  # Standard nnUNet learning rate
-            self.optimizer = torch.optim.SGD(
-                self.network.parameters(), 
-                sgd_lr, 
-                weight_decay=self.weight_decay,
-                momentum=0.99, 
-                nesterov=True
-            )
-            self.initial_lr = sgd_lr  # Store for poly_lr decay
-            self.print_to_log_file(f"Optimizer: SGD (lr={sgd_lr}, momentum=0.99)")
-        
-        self.lr_scheduler = None
-
+    # initialize_optimizer_and_scheduler handled by subclasses
+    # maybe_update_lr handled by subclasses
     def _save_experiment_config(self):
         """Override to add CLRamp-specific fields."""
         # Call parent to save base config
@@ -167,8 +129,6 @@ class nnUNetTrainer_CLRamp_DualMask(nnUNetTrainer_NoCLRamp_DualMask):
             config = json.load(f)
         
         config.update({
-            "use_adamw": self.use_adamw,
-            "optimizer": "AdamW" if self.use_adamw else "SGD",
             "initial_intensity": self.initial_intensity,
             "max_intensity": self.max_intensity,
             "intensity_ramp_step": self.intensity_ramp_step,
@@ -176,9 +136,6 @@ class nnUNetTrainer_CLRamp_DualMask(nnUNetTrainer_NoCLRamp_DualMask):
             "early_stop_patience_epochs": self.early_stop_patience_epochs,
             "training_intensity": f"CLRamp starting at {self.initial_intensity}",
         })
-        
-        if self.use_adamw:
-            config["initial_lr"] = 1e-4
         
         with open(latest, 'w') as f:
             json.dump(config, f, indent=2)
@@ -306,7 +263,6 @@ class nnUNetTrainer_CLRamp_DualMask(nnUNetTrainer_NoCLRamp_DualMask):
             'best_product_ever': self.best_product_ever,
             'ramp_history': self.ramp_history,
             'validation_mode': self.validation_mode,
-            'use_adamw': self.use_adamw,
             # Experiment 2: Gain-guard state
             'ramp_wait_for_gain': self.ramp_wait_for_gain,
             'ramp_first_epoch_value': self.ramp_first_epoch_value,
@@ -353,13 +309,70 @@ class nnUNetTrainer_CLRamp_DualMask(nnUNetTrainer_NoCLRamp_DualMask):
         except Exception as e:
             self.print_to_log_file(f"WARNING: Could not load CLRamp_DualMask state: {e}. Using defaults.")
 
+class nnUNetTrainer_CLRamp_DualMask_Adam(nnUNetTrainer_CLRamp_DualMask):
+    """
+    DualMask Curriculum Learning Ramp Trainer.
+    Uses AdamW optimizer and cosine decay. Provides a clean folder output out-of-the-box.
+    """
+    def initialize_optimizer_and_scheduler(self):
+        assert self.network is not None, "self.initialize_network must be called first"
+        self.optimizer = torch.optim.AdamW(
+            self.network.parameters(), 
+            lr=1e-4, 
+            weight_decay=3e-5
+        )
+        self.print_to_log_file("Optimizer: AdamW (lr=1e-4, weight_decay=3e-5)")
+        self.lr_scheduler = None
+        
+    def _save_experiment_config(self):
+        super()._save_experiment_config()
+        if self.output_folder is None: return
+        import glob, json
+        config_files = sorted(glob.glob(join(self.output_folder, "experiment_config_*.json")))
+        if config_files:
+            latest = config_files[-1]
+            with open(latest, 'r') as f: config = json.load(f)
+            config["optimizer"] = "AdamW"
+            config["initial_lr"] = 1e-4
+            with open(latest, 'w') as f: json.dump(config, f, indent=2)
+
     def maybe_update_lr(self, epoch=None):
-        """
-        Override LR scheduling for AdamW (constant LR) vs SGD (poly_lr).
-        """
-        if self.use_adamw:
-            # AdamW: Keep constant LR
-            self.print_to_log_file("lr:", np.round(self.optimizer.param_groups[0]['lr'], decimals=6))
+        import math
+        if epoch is None:
+            ep = self.epoch + 1
         else:
-            # SGD: Use standard poly_lr from grandparent
-            super(nnUNetTrainer_NoCLRamp_DualMask, self).maybe_update_lr(epoch)
+            ep = epoch
+        new_lr = 1e-4 * 0.5 * (1.0 + math.cos(math.pi * ep / self.max_num_epochs))
+        self.optimizer.param_groups[0]['lr'] = new_lr
+        self.print_to_log_file("lr:", np.round(new_lr, decimals=6))
+
+
+class nnUNetTrainer_CLRamp_DualMask_SGD(nnUNetTrainer_CLRamp_DualMask):
+    """
+    DualMask Curriculum Learning Ramp Trainer.
+    Uses standard SGD with poly_lr. Provides a clean folder output out-of-the-box.
+    """
+    def initialize_optimizer_and_scheduler(self):
+        assert self.network is not None, "self.initialize_network must be called first"
+        sgd_lr = 0.01
+        self.optimizer = torch.optim.SGD(
+            self.network.parameters(), 
+            sgd_lr, 
+            weight_decay=self.weight_decay,
+            momentum=0.99, 
+            nesterov=True
+        )
+        self.initial_lr = sgd_lr
+        self.print_to_log_file(f"Optimizer: SGD (lr={sgd_lr}, momentum=0.99)")
+        self.lr_scheduler = None
+
+    def _save_experiment_config(self):
+        super()._save_experiment_config()
+        if self.output_folder is None: return
+        import glob, json
+        config_files = sorted(glob.glob(join(self.output_folder, "experiment_config_*.json")))
+        if config_files:
+            latest = config_files[-1]
+            with open(latest, 'r') as f: config = json.load(f)
+            config["optimizer"] = "SGD"
+            with open(latest, 'w') as f: json.dump(config, f, indent=2)

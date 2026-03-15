@@ -72,11 +72,6 @@ class nnUNetTrainer_NoCLRamp_DualMask(nnUNetTrainer_IterativeDenoising):
         
         # Best spectrum score for model selection
         self.best_spectrum_score = None
-        
-        # ============== OUTPUT FOLDER SUFFIX ==============
-        # suffix = f"_{self.validation_mode}"
-        # if self.output_folder is not None:
-            # self.output_folder = self.output_folder + suffix
 
     def initialize_network(self):
         """
@@ -545,3 +540,49 @@ class nnUNetTrainer_NoCLRamp_DualMask(nnUNetTrainer_IterativeDenoising):
                     "checkpoint into this dual-mask trainer. Please train from scratch."
                 ) from e
             raise e
+
+
+class nnUNetTrainer_NoCLRamp_DualMask_Adam(nnUNetTrainer_NoCLRamp_DualMask):
+    """
+    DualMask IterativeDenoising trainer with Constant Intensity.
+    Uses AdamW optimizer and cosine decay. Provides a clean folder output out-of-the-box.
+    """
+    def initialize_optimizer_and_scheduler(self):
+        assert self.network is not None, "self.initialize_network must be called first"
+        self.optimizer = torch.optim.AdamW(
+            self.network.parameters(), 
+            lr=1e-4, 
+            weight_decay=3e-5
+        )
+        self.print_to_log_file("Optimizer: AdamW (lr=1e-4, weight_decay=3e-5)")
+        self.lr_scheduler = None
+
+    def _save_experiment_config(self):
+        super()._save_experiment_config()
+        if self.output_folder is None: return
+        import glob, json
+        config_files = sorted(glob.glob(join(self.output_folder, "experiment_config_*.json")))
+        if config_files:
+            latest = config_files[-1]
+            with open(latest, 'r') as f: config = json.load(f)
+            config["optimizer"] = "AdamW"
+            config["initial_lr"] = 1e-4
+            with open(latest, 'w') as f: json.dump(config, f, indent=2)
+
+    def maybe_update_lr(self, epoch=None):
+        import math
+        if epoch is None:
+            ep = self.epoch + 1
+        else:
+            ep = epoch
+        new_lr = 1e-4 * 0.5 * (1.0 + math.cos(math.pi * ep / self.max_num_epochs))
+        self.optimizer.param_groups[0]['lr'] = new_lr
+        self.print_to_log_file("lr:", np.round(new_lr, decimals=6))
+
+
+class nnUNetTrainer_NoCLRamp_DualMask_SGD(nnUNetTrainer_NoCLRamp_DualMask):
+    """
+    DualMask IterativeDenoising trainer with Constant Intensity.
+    Uses standard SGD with poly_lr. Provides a clean folder output out-of-the-box.
+    """
+    pass

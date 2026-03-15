@@ -83,8 +83,6 @@ nnUNetTrainer_MaskDenoiseRandom = _try_import(
     'nnunet.training.network_training.nnUNetTrainer_MaskDenoise', 'nnUNetTrainer_MaskDenoiseRandom')
 nnUNetTrainerV2_ProgressiveChannels = _try_import(
     'nnunet.training.network_training.nnUNetTrainerV2_ProgressiveChannels', 'nnUNetTrainerV2_ProgressiveChannels')
-nnUNetTrainerV2_SegResNetAugRamp = _try_import(
-    'nnunet.training.network_training.nnUNetTrainerV2_SegResNetAugRamp', 'nnUNetTrainerV2_SegResNetAugRamp')
 
 
 # ── Helper to create 300-epoch subclass ──────────────────────
@@ -141,8 +139,6 @@ nnUNetTrainerV2_InputResidualUNet_PerConv_Split_300epochs = _make_300ep(
     nnUNetTrainerV2_InputResidualUNet_PerConv_Split, 'nnUNetTrainerV2_InputResidualUNet_PerConv_Split_300epochs')
 nnUNetTrainerV2_InputResidualUNet_PerStage_SplitDDS_300epochs = _make_300ep(
     nnUNetTrainerV2_InputResidualUNet_PerStage_SplitDDS, 'nnUNetTrainerV2_InputResidualUNet_PerStage_SplitDDS_300epochs')
-nnUNetTrainerV2_SegResNetAugRamp_300epochs = _make_300ep(
-    nnUNetTrainerV2_SegResNetAugRamp, 'nnUNetTrainerV2_SegResNetAugRamp_300epochs')
 nnUNetTrainerV2_InputResidualUNet_PerConv_SplitDDS_300epochs = _make_300ep(
     nnUNetTrainerV2_InputResidualUNet_PerConv_SplitDDS, 'nnUNetTrainerV2_InputResidualUNet_PerConv_SplitDDS_300epochs')
 nnUNetTrainer_SegResNet_300epochs = _make_300ep(
