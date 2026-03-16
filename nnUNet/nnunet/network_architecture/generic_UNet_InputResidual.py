@@ -658,3 +658,127 @@ class Generic_UNet_InputResidual_PerConv_Split(_InputResidualSplitBase):
 
             x = block.lrelu(x)
         return x
+
+
+# ====================================================================== #
+#  Split Variants with Encoder Deep Supervision (SplitDDS)               #
+# ====================================================================== #
+
+class _InputResidualSplitDDSBase(_InputResidualSplitBase):
+    """
+    Base class for Split variants with Deep Supervision on the Encoder.
+    Adds a 1x1 conv output projection head to each encoder stage's output
+    and the bottleneck, so that the encoder is also deeply supervised.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        # Create output projection heads for the encoder + bottleneck
+        # We need N heads where N is the number of encoder stages (len(conv_blocks_context) - 1)
+        # plus the bottleneck.
+        self.seg_outputs_enc = nn.ModuleList()
+        for stage_module in self.conv_blocks_context:
+            # The output channels of this stage is the out_channels of its last block
+            last_block = list(self._iter_basic_blocks(stage_module))[-1]
+            out_ch = last_block.conv.out_channels
+            # Projection to number of classes
+            # Use same settings as regular seg_outputs
+            use_bias = self.seg_outputs[0].bias is not None if len(self.seg_outputs) > 0 else False
+            proj = self.conv_op(out_ch, self.num_classes, 1, 1, 0, 1, 1, bias=use_bias)
+            self.seg_outputs_enc.append(proj)
+            
+        if self.weightInitializer is not None:
+             self.seg_outputs_enc.apply(self.weightInitializer)
+
+    def forward(self, x):
+        x_input = x
+        skips = []
+        seg_outputs = []
+        seg_outputs_enc_list = []
+
+        # Encoder
+        for d in range(len(self.conv_blocks_context) - 1):
+            x = self._run_stage(self.conv_blocks_context[d], x, x_input)
+            skips.append(x)
+            
+            # Encoder Deep Supervision: apply 1x1 projection
+            seg_outputs_enc_list.append(self.final_nonlin(self.seg_outputs_enc[d](x)))
+            
+            if not self.convolutional_pooling:
+                x = self.td[d](x)
+
+        # Bottleneck
+        x = self._run_stage(self.conv_blocks_context[-1], x, x_input)
+        # Bottleneck Deep Supervision
+        seg_outputs_enc_list.append(self.final_nonlin(self.seg_outputs_enc[-1](x)))
+
+        # Decoder
+        for u in range(len(self.tu)):
+            x = self.tu[u](x)
+            x = torch.cat((x, skips[-(u + 1)]), dim=1)
+            x = self._run_stage(self.conv_blocks_localization[u], x, x_input)
+            seg_outputs.append(self.final_nonlin(self.seg_outputs[u](x)))
+
+        if self._deep_supervision and self.do_ds:
+            # Original nnU-Net: tuple of [highest_res, downsampled_1, downsampled_2...]
+            # The decoder seg_outputs are ordered low-res to high-res (as the decoder builds up).
+            # The deep supervision list is: [seg_outputs[-1], upscale(seg_outputs[-2]), ...]
+            
+            dec_outputs = [seg_outputs[-1]] + [
+                i(j) for i, j in zip(
+                    list(self.upscale_logits_ops)[::-1],
+                    seg_outputs[:-1][::-1]
+                )
+            ]
+            
+            # Add the encoder outputs to the deep supervision list.
+            # Encoder segments are ordered high-res to low-res (enc0, enc1, ..., bottleneck).
+            # We must NOT apply self.upscale_logits_ops to them, because we want the target
+            # resolution for them to remain downsampled corresponding to their depth.
+            enc_outputs = seg_outputs_enc_list
+            
+            return tuple(dec_outputs + enc_outputs)
+        else:
+            return seg_outputs[-1]
+
+
+class Generic_UNet_InputResidual_PerStage_SplitDDS(_InputResidualSplitDDSBase):
+    """
+    Split-residual injected at the LAST block of each stage.
+    Includes deep supervision on encoder blocks.
+    """
+    def _run_stage(self, stage_module, x, x_input):
+        blocks = list(self._iter_basic_blocks(stage_module))
+
+        for block in blocks[:-1]:
+            x = block(x)
+
+        last = blocks[-1]
+        x = last.conv(x)
+        if last.dropout is not None:
+            x = last.dropout(x)
+        x = last.instnorm(x)
+
+        x = self._split_add_input(x, x_input)
+
+        x = last.lrelu(x)
+        return x
+
+
+class Generic_UNet_InputResidual_PerConv_SplitDDS(_InputResidualSplitDDSBase):
+    """
+    Split-residual injected at EVERY conv block.
+    Includes deep supervision on encoder blocks.
+    """
+    def _run_stage(self, stage_module, x, x_input):
+        for block in self._iter_basic_blocks(stage_module):
+            x = block.conv(x)
+            if block.dropout is not None:
+                x = block.dropout(x)
+            x = block.instnorm(x)
+
+            x = self._split_add_input(x, x_input)
+
+            x = block.lrelu(x)
+        return x
+

@@ -40,6 +40,7 @@ class nnUNetTrainer_CLRampDM_Lscale(nnUNetTrainer_CLRamp_DualMask):
         # Shared memory for worker threads to read the current intensity.
         # It starts at 0.0 (identity/no intensity) and scales up to 1.0 (max intensity).
         self.shared_intensity = multiprocessing.Value('f', 0.0)
+        self.use_adamw = False
 
     def _save_experiment_config(self):
         """Override to save Lscale tracking state."""
