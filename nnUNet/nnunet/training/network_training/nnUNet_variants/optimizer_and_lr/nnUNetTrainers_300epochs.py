@@ -45,6 +45,10 @@ nnUNetTrainer_CLRamp_DualMask_Adam = _try_import(
     'nnunet.training.network_training.nnUNetTrainer_CLRamp_DualMask', 'nnUNetTrainer_CLRamp_DualMask_Adam')
 nnUNetTrainer_CLRamp_DualMask_SGD = _try_import(
     'nnunet.training.network_training.nnUNetTrainer_CLRamp_DualMask', 'nnUNetTrainer_CLRamp_DualMask_SGD')
+nnUNetTrainer_CLRampDM_Lscale_Adam = _try_import(
+    'nnunet.training.network_training.nnUNetTrainer_CLRampDM_Lscale', 'nnUNetTrainer_CLRampDM_Lscale_Adam')
+nnUNetTrainer_CLRampDM_Lscale_SGD = _try_import(
+    'nnunet.training.network_training.nnUNetTrainer_CLRampDM_Lscale', 'nnUNetTrainer_CLRampDM_Lscale_SGD')
 nnUNetTrainer_Rigidity = _try_import(
     'nnunet.training.network_training.nnUNetTrainer_Rigidity', 'nnUNetTrainer_Rigidity')
 nnUNetTrainerV2_InputResidualUNet_PerStage = _try_import(
@@ -125,6 +129,10 @@ nnUNetTrainer_CLRamp_DualMask_Adam_300epochs = _make_300ep(
     nnUNetTrainer_CLRamp_DualMask_Adam, 'nnUNetTrainer_CLRamp_DualMask_Adam_300epochs')
 nnUNetTrainer_CLRamp_DualMask_SGD_300epochs = _make_300ep(
     nnUNetTrainer_CLRamp_DualMask_SGD, 'nnUNetTrainer_CLRamp_DualMask_SGD_300epochs')
+nnUNetTrainer_CLRampDM_Lscale_Adam_300epochs = _make_300ep(
+    nnUNetTrainer_CLRampDM_Lscale_Adam, 'nnUNetTrainer_CLRampDM_Lscale_Adam_300epochs')
+nnUNetTrainer_CLRampDM_Lscale_SGD_300epochs = _make_300ep(
+    nnUNetTrainer_CLRampDM_Lscale_SGD, 'nnUNetTrainer_CLRampDM_Lscale_SGD_300epochs')
 nnUNetTrainer_Rigidity_300epochs = _make_300ep(
     nnUNetTrainer_Rigidity, 'nnUNetTrainer_Rigidity_300epochs')
 nnUNetTrainerV2_InputResidualUNet_PerStage_300epochs = _make_300ep(

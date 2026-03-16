@@ -4,6 +4,7 @@ import multiprocessing
 from batchgenerators.utilities.file_and_folder_operations import join, save_json
 from nnunet.training.network_training.nnUNetTrainerV2 import nnUNetTrainerV2
 from nnunet.training.data_augmentation.segresnet_aug_ramp import get_segresnet_ramp_augmentation
+from nnunet.training.loss_functions.deep_supervision import MultipleOutputLoss2
 
 
 class nnUNetTrainerV2_SegResNetAugRamp(nnUNetTrainerV2):
@@ -50,6 +51,23 @@ class nnUNetTrainerV2_SegResNetAugRamp(nnUNetTrainerV2):
             self.process_plans(self.plans)
 
             self.setup_DA_params()
+
+            ################# Here we wrap the loss for deep supervision ############
+            # we need to know the number of outputs of the network
+            net_numpool = len(self.net_num_pool_op_kernel_sizes)
+
+            # we give each output a weight which decreases exponentially (division by 2) as the resolution decreases
+            # this gives higher resolution outputs more weight in the loss
+            weights = np.array([1 / (2 ** i) for i in range(net_numpool)])
+
+            # we don't use the lowest 2 outputs. Normalize weights so that they sum to 1
+            mask = np.array([True] + [True if i < net_numpool - 1 else False for i in range(1, net_numpool)])
+            weights[~mask] = 0
+            weights = weights / weights.sum()
+            self.ds_loss_weights = weights
+            # now wrap the loss
+            self.loss = MultipleOutputLoss2(self.loss, self.ds_loss_weights)
+            ################# END ###################
 
             ################# Here we construct the dataloaders #################
             if training:
@@ -120,7 +138,10 @@ class nnUNetTrainerV2_SegResNetAugRamp(nnUNetTrainerV2):
                 # improvement_ratio = (init_loss - best_loss) / (patience * init_loss)
                 # self.current_prob = self.start_prob + (1 - self.start_prob) * improvement_ratio
                 # Note: start_prob is 0.0
-                improvement_ratio = (self.init_loss - self.best_loss_ever) / (self.plateau_patience * self.init_loss)
+                # Math: improvement_ratio = (init_loss - best_loss) / (init_loss - target_loss)
+                # For standard DC_and_CE, target_loss is -1.0.
+                total_possible_improvement = self.init_loss - (-1.0)
+                improvement_ratio = (self.init_loss - self.best_loss_ever) / (self.plateau_patience * total_possible_improvement)
                 
                 # Clamp between 0 and 1
                 new_prob = max(0.0, min(1.0, float(improvement_ratio)))
