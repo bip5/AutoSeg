@@ -92,7 +92,7 @@ class DualMaskDualInputTransform(AbstractTransform):
         probs = CLRAMP_PROBS
         transforms = []
         
-        # 1. Spatial (rotation + scale) - p=0.5
+        # 1. Spatial (rotation + scale) - p=0.2
         transforms.append(SpatialTransform(
             self.patch_size,
             do_elastic_deform=False,
@@ -107,13 +107,13 @@ class DualMaskDualInputTransform(AbstractTransform):
         
         # Only apply intensity noise if intensity is meaningful
         if intensity > 0.01:
-            # 2. Gaussian Noise - p=0.3
+            # 2. Gaussian Noise -
             transforms.append(GaussianNoiseTransform(
                 noise_variance=p['noise_variance'], 
                 p_per_sample=probs['p_noise']
             ))
             
-            # 3. Gaussian Blur - p=0.3
+            # 3. Gaussian Blur -
             transforms.append(GaussianBlurTransform(
                 blur_sigma=p['blur_sigma'], 
                 different_sigma_per_channel=True, 
@@ -121,19 +121,19 @@ class DualMaskDualInputTransform(AbstractTransform):
                 p_per_channel=0.5
             ))
             
-            # 4. Brightness Multiplicative - p=0.3
+            # 4. Brightness Multiplicative -
             transforms.append(BrightnessMultiplicativeTransform(
                 multiplier_range=p['brightness_range'], 
                 p_per_sample=probs['p_brightness']
             ))
             
-            # 5. Contrast - p=0.3
+            # 5. Contrast -
             transforms.append(ContrastAugmentationTransform(
                 contrast_range=p['contrast_range'], 
                 p_per_sample=probs['p_contrast']
             ))
             
-            # 6. Low Resolution - p=0.3
+            # 6. Low Resolution -
             transforms.append(SimulateLowResolutionTransform(
                 zoom_range=p['low_res_zoom'], 
                 per_channel=True, 
@@ -143,7 +143,7 @@ class DualMaskDualInputTransform(AbstractTransform):
                 p_per_sample=probs['p_low_res']
             ))
             
-            # 7. Gamma (Inverted) - p=0.3
+            # 7. Gamma (Inverted) 
             transforms.append(GammaTransform(
                 gamma_range=p['gamma_range'], 
                 invert_image=True, 
@@ -152,7 +152,7 @@ class DualMaskDualInputTransform(AbstractTransform):
                 p_per_sample=probs['p_gamma_inverted']
             ))
             
-            # 8. Gamma (Normal) - p=0.3
+            # 8. Gamma (Normal) - 
             transforms.append(GammaTransform(
                 gamma_range=p['gamma_range'], 
                 invert_image=False, 
