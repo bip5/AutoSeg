@@ -228,18 +228,17 @@ class nnUNetTrainerV2_SeqWT(nnUNetTrainerV2):
         self.num_runs = 32
         self.epochs_per_run = 50
         self.seqwt_base_num_features = 1
-        self.seqwt_batch_size = 8
+        self.seqwt_batch_size = 20
 
         # Override nnUNetTrainerV2 defaults
         self.max_num_epochs = self.epochs_per_run
         self.initial_lr = 1e-2
-        self.num_batches_per_epoch = 50
-        self.num_val_batches_per_epoch = 10
+        self.num_batches_per_epoch = 20   # 20 batches * 20 size = 400 samples
+        self.num_val_batches_per_epoch = 2  # 2 batches * 20 size = 40 samples (entire val set)
         self.pin_memory = False  # CPU — no pinned memory
 
         # ============== SEQUENTIAL STATE ==============
         self.frozen_state_dicts = []   # list of OrderedDicts (frozen weight history)
-        self.frozen_networks_eval = [] # list of frozen PyTorch models for cascading inference
         self.alpha_params = None       # nn.Parameter vector (learned scalars)
         self.current_run = 0
         self.predicted_masks = {}      # {sample_key: np.ndarray} for mask channel
@@ -499,27 +498,28 @@ class nnUNetTrainerV2_SeqWT(nnUNetTrainerV2):
             noise = torch.randn_like(data)
             data_dict['data'] = torch.cat([data, noise], dim=1)
         else:
-            # Run 2+: cascade through all frozen networks to generate prior mask
+            # Run 2+: generate mask on-the-fly from current network
             with torch.no_grad():
-                # Start with image + noise
-                curr_input = torch.cat([data, torch.randn_like(data)], dim=1)
-                
-                # Cascade through all frozen previous models
-                for frozen_net in self.frozen_networks_eval:
-                    ds_was = frozen_net.do_ds
-                    frozen_net.do_ds = False
-                    output = frozen_net(curr_input)
-                    frozen_net.do_ds = ds_was
+                # Temporarily create a noisy input for forward pass
+                noise_temp = torch.randn_like(data)
+                temp_input = torch.cat([data, noise_temp], dim=1)
 
-                    output_softmax = torch.softmax(output, dim=1)
-                    output_seg = output_softmax.argmax(1, keepdim=True).float()
+                self.network.eval()
+                ds_was = self.network.do_ds
+                self.network.do_ds = False
+                output = self.network(temp_input)
+                self.network.do_ds = ds_was
+                self.network.train()
 
-                    orig_ch = data.shape[1]
-                    mask_channels = output_seg.expand(-1, orig_ch, *[-1] * (data.dim() - 2))
-                    curr_input = torch.cat([data, mask_channels], dim=1)
+                # Convert output to segmentation mask (argmax)
+                output_softmax = torch.softmax(output, dim=1)
+                output_seg = output_softmax.argmax(1, keepdim=True).float()
 
-            # Assign the cascaded result (image + final mask of run K-1) as input for Run K
-            data_dict['data'] = curr_input
+                # Tile to match original channel count
+                orig_ch = data.shape[1]
+                mask_channels = output_seg.expand(-1, orig_ch, *[-1] * (data.dim() - 2))
+
+            data_dict['data'] = torch.cat([data, mask_channels], dim=1)
 
     # =====================================================================
     #  TRAINING ITERATION (GPU-enabled)
@@ -661,14 +661,6 @@ class nnUNetTrainerV2_SeqWT(nnUNetTrainerV2):
                 for k, v in self.network.state_dict().items():
                     frozen_sd[k] = v.clone().detach()
                 self.frozen_state_dicts.append(frozen_sd)
-
-                # Store an eval-mode copy of the network for cascading inference
-                import copy
-                frozen_net = copy.deepcopy(self.network)
-                frozen_net.eval()
-                for p in frozen_net.parameters():
-                    p.requires_grad = False
-                self.frozen_networks_eval.append(frozen_net)
 
                 self.print_to_log_file(
                     f"  Frozen {len(self.frozen_state_dicts)} historical weight sets"

@@ -233,13 +233,12 @@ class nnUNetTrainerV2_SeqWT(nnUNetTrainerV2):
         # Override nnUNetTrainerV2 defaults
         self.max_num_epochs = self.epochs_per_run
         self.initial_lr = 1e-2
-        self.num_batches_per_epoch = 50
+        self.num_batches_per_epoch = 50   # 250 is overkill for 22k params
         self.num_val_batches_per_epoch = 10
         self.pin_memory = False  # CPU — no pinned memory
 
         # ============== SEQUENTIAL STATE ==============
         self.frozen_state_dicts = []   # list of OrderedDicts (frozen weight history)
-        self.frozen_networks_eval = [] # list of frozen PyTorch models for cascading inference
         self.alpha_params = None       # nn.Parameter vector (learned scalars)
         self.current_run = 0
         self.predicted_masks = {}      # {sample_key: np.ndarray} for mask channel
@@ -247,6 +246,10 @@ class nnUNetTrainerV2_SeqWT(nnUNetTrainerV2):
         # Per-run loss tracking
         self.all_run_losses = []       # list of per-run loss histories
         self.all_run_alphas = []       # list of alpha snapshots
+
+        # Append suffix to output folder
+        if self.output_folder is not None:
+            self.output_folder = self.output_folder + f"_SeqWT_r{self.num_runs}_ep{self.epochs_per_run}"
 
     # =====================================================================
     #  INITIALISATION OVERRIDES
@@ -401,9 +404,8 @@ class nnUNetTrainerV2_SeqWT(nnUNetTrainerV2):
             True,   # convolutional_upsampling
             max_num_features=None  # No cap — let channels grow naturally
         )
-        # Move to GPU if available
-        if torch.cuda.is_available():
-            self.network.cuda()
+        # FORCE CPU — even if CUDA is available, stay on CPU
+        self.network.cpu()
         self.network.inference_apply_nonlin = softmax_helper
 
         self.print_to_log_file(
@@ -466,8 +468,6 @@ class nnUNetTrainerV2_SeqWT(nnUNetTrainerV2):
         for key in self.frozen_state_dicts[0]:
             # Stack all historical versions of this parameter: (num_history, *param_shape)
             stacked = torch.stack([sd[key].float() for sd in self.frozen_state_dicts])
-            # Move to same device as the alpha vector (CPU or GPU)
-            stacked = stacked.to(softmax_alphas.device)
             # Broadcast alpha over all dims of the weight tensor
             alpha_view = softmax_alphas.view(-1, *([1] * (stacked.dim() - 1)))
             combined[key] = (stacked * alpha_view).sum(dim=0)
@@ -490,49 +490,46 @@ class nnUNetTrainerV2_SeqWT(nnUNetTrainerV2):
         """
         data = data_dict['data']  # torch.Tensor from batchgenerators pipeline
 
-        # Move to same device as the network
-        device = next(self.network.parameters()).device
-        data = data.to(device)
-
         if self.current_run == 0:
             # Run 1: concatenate Gaussian noise
             noise = torch.randn_like(data)
             data_dict['data'] = torch.cat([data, noise], dim=1)
         else:
-            # Run 2+: cascade through all frozen networks to generate prior mask
+            # Run 2+: generate mask on-the-fly from current network
             with torch.no_grad():
-                # Start with image + noise
-                curr_input = torch.cat([data, torch.randn_like(data)], dim=1)
-                
-                # Cascade through all frozen previous models
-                for frozen_net in self.frozen_networks_eval:
-                    ds_was = frozen_net.do_ds
-                    frozen_net.do_ds = False
-                    output = frozen_net(curr_input)
-                    frozen_net.do_ds = ds_was
+                # Temporarily create a noisy input for forward pass
+                noise_temp = torch.randn_like(data)
+                temp_input = torch.cat([data, noise_temp], dim=1)
 
-                    output_softmax = torch.softmax(output, dim=1)
-                    output_seg = output_softmax.argmax(1, keepdim=True).float()
+                self.network.eval()
+                ds_was = self.network.do_ds
+                self.network.do_ds = False
+                output = self.network(temp_input)
+                self.network.do_ds = ds_was
+                self.network.train()
 
-                    orig_ch = data.shape[1]
-                    mask_channels = output_seg.expand(-1, orig_ch, *[-1] * (data.dim() - 2))
-                    curr_input = torch.cat([data, mask_channels], dim=1)
+                # Convert output to segmentation mask (argmax)
+                output_softmax = torch.softmax(output, dim=1)
+                output_seg = output_softmax.argmax(1, keepdim=True).float()  # (B, 1, *spatial)
 
-            # Assign the cascaded result (image + final mask of run K-1) as input for Run K
-            data_dict['data'] = curr_input
+                # Tile to match original channel count
+                orig_ch = data.shape[1] // 1  # data has original_num_input_channels
+                mask_channels = output_seg.expand(-1, orig_ch, *[-1] * (data.dim() - 2))
+
+            data_dict['data'] = torch.cat([data, mask_channels], dim=1)
 
     # =====================================================================
-    #  TRAINING ITERATION (GPU-enabled)
+    #  TRAINING ITERATION (CPU-only, no CUDA)
     # =====================================================================
 
     def run_iteration(self, data_generator, do_backprop=True, run_online_evaluation=False):
         """
-        Training iteration with GPU support.
-        Injects noise/mask as second channel, moves data to device.
+        CPU-only training iteration.
+        Strips all CUDA/AMP logic. Injects noise/mask as second channel.
         """
         data_dict = next(data_generator)
 
-        # Inject noise or mask as second channel (also moves to device)
+        # Inject noise or mask as second channel
         self._inject_second_channel(data_dict)
 
         data = data_dict['data']
@@ -541,14 +538,7 @@ class nnUNetTrainerV2_SeqWT(nnUNetTrainerV2):
         data = maybe_to_torch(data).float()
         target = maybe_to_torch(target)
 
-        # Move to GPU if available
-        device = next(self.network.parameters()).device
-        if device.type == 'cuda':
-            data = data.cuda(non_blocking=True)
-            if isinstance(target, list):
-                target = [i.cuda(non_blocking=True) for i in target]
-            else:
-                target = target.cuda(non_blocking=True)
+        # Ensure everything is on CPU (no to_cuda calls)
 
         self.optimizer.zero_grad()
 
@@ -662,14 +652,6 @@ class nnUNetTrainerV2_SeqWT(nnUNetTrainerV2):
                     frozen_sd[k] = v.clone().detach()
                 self.frozen_state_dicts.append(frozen_sd)
 
-                # Store an eval-mode copy of the network for cascading inference
-                import copy
-                frozen_net = copy.deepcopy(self.network)
-                frozen_net.eval()
-                for p in frozen_net.parameters():
-                    p.requires_grad = False
-                self.frozen_networks_eval.append(frozen_net)
-
                 self.print_to_log_file(
                     f"  Frozen {len(self.frozen_state_dicts)} historical weight sets"
                 )
@@ -740,8 +722,8 @@ class nnUNetTrainerV2_SeqWT(nnUNetTrainerV2):
             # Store per-run loss history
             self.all_run_losses.append({
                 'run': run_idx,
-                'train_losses': [float(x) for x in self.all_tr_losses],
-                'val_losses': [float(x) for x in self.all_val_losses],
+                'train_losses': list(self.all_tr_losses),
+                'val_losses': list(self.all_val_losses),
             })
 
             # Store alpha values
@@ -874,7 +856,7 @@ class nnUNetTrainerV2_SeqWT(nnUNetTrainerV2):
             "batch_size": self.seqwt_batch_size,
             "total_time_seconds": total_time,
             "total_time_minutes": total_time / 60,
-            "device": "GPU",
+            "device": "CPU",
             "augmentation": "None",
             "lr_schedule": "poly_lr per run",
             "initial_lr": self.initial_lr,
